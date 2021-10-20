@@ -1,0 +1,233 @@
+---
+title: "qseq new mock"
+author: "Mingjie"
+date: "9/12/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r library packages}
+library(tidyverse)
+library(modelr)
+library(here)
+library(patchwork)
+```
+
+```{r read in data}
+MTnum <- read.table(here("data", '9N', 'qseqTest_S99_OTU_countN_table.txt'), header = T)
+mtagNum <- MTnum %>% select(- contains("NC"))
+rm(MTnum)
+inputOTUid <- mtagNum$OTUID
+readNum <- read.table(here("data", '9N', "qseqTest_S99_OTU_9Ns_table.txt"), header = T)
+readNum <- readNum %>% select(-contains("NC"))
+readNum2 <- readNum %>% 
+            filter(OTUID %in% c("HAP001","HAP002","HAP003","HAP005","HAP006","HAP009","HAP021","HAP022","HAP028","HAP036","HAP046","HAP048","HAP053","HAP054","HAP055","HAP056","HAP099","HAP100","HAP103","HAP104","HAP105","HAP107","HAP109","HAP110","HAP111","HAP112","HAP113","HAP118","HAP131","HAP133","HAP139","HAP144","HAP176","HAP177","HAP179","HAP180","HAP181","HAP183","HAP184","HAP185","HAP187","HAP188","HAP189","HAP190","HAP193","HAP194","HAP198","HAP200","HAP207","HAP210","HAP222","HAP264","HAP10C","HAP20C","HAP40C")) %>%
+            arrange(OTUID)
+readNum=readNum2
+rm(readNum2)
+
+mtagNum2 <- mtagNum %>% 
+            filter(OTUID %in% c("HAP001","HAP002","HAP003","HAP005","HAP006","HAP009","HAP021","HAP022","HAP028","HAP036","HAP046","HAP048","HAP053","HAP054","HAP055","HAP056","HAP099","HAP100","HAP103","HAP104","HAP105","HAP107","HAP109","HAP110","HAP111","HAP112","HAP113","HAP118","HAP131","HAP133","HAP139","HAP144","HAP176","HAP177","HAP179","HAP180","HAP181","HAP183","HAP184","HAP185","HAP187","HAP188","HAP189","HAP190","HAP193","HAP194","HAP198","HAP200","HAP207","HAP210","HAP222","HAP264","HAP10C","HAP20C","HAP40C")) %>%
+            arrange(OTUID)
+mtagNum=mtagNum2
+```
+
+```{r reformate data }
+longReadNum <- pivot_longer(readNum, names_to = "sampleName", values_to = "readNum", -OTUID)
+longMtagNum <- pivot_longer(mtagNum, names_to  = "sampleName", values_to = "mtagNum", -OTUID)
+dd <- longReadNum %>% left_join(longMtagNum, by = c("OTUID", "sampleName"))
+
+#parse sample information
+dd$soup = substr(dd$sampleName,1,1)
+dd$exp = character(length=dim(dd)[1] )
+unique(dd$soup)
+dd$exp[which(dd$soup==unique(dd$soup)[1] | dd$soup==unique(dd$soup)[2] | dd$soup==unique(dd$soup)[3] | dd$soup==unique(dd$soup)[4] | dd$soup==unique(dd$soup)[5] | dd$soup==unique(dd$soup)[6] | dd$soup==unique(dd$soup)[7])] = 'within-spp'
+
+dd$soupRep = substr(dd$sampleName,2,2)
+dd$PCR = substr(dd$sampleName,4,14)
+dd$lib = substr(dd$sampleName,16,16)
+
+dd$pcrRep = character(length=dim(dd)[1])
+for (i in 1:length(unique(dd$soup))) {
+  for (j in 1:length(unique(dd$soupRep))) {
+    a = which(dd$soup==unique(dd$soup)[i] & dd$soupRep==unique(dd$soupRep)[j])
+    for (k in 1:3) {
+        dd$pcrRep[dd$PCR==unique(dd$PCR[a])[k]] = k 
+    }
+  }
+}
+```
+
+
+```{r read in input data}
+load(here("data", "evenInputCopyNum.Rdata"))
+evenInputGdna <- read.csv(here("data", "evenInputGDNA.csv"), header = T)
+```
+
+```{r reformate within input}
+even_coi_copies$OTUID = paste('HAP', str_pad(even_coi_copies$DNA_ID,  3,'left', pad='0'),sep='')
+even_coi_copies$DNA_ID =NULL
+
+longInputCOI_within <- gather(even_coi_copies, key = "sample", value = "inputCOINum",-OTUID)
+str(longInputCOI_within)
+unique(longInputCOI_within$sample)
+#add exp & soup variables
+longInputCOI_within = longInputCOI_within %>% 
+  mutate(
+    soup = substr(sample, nchar(sample), nchar(sample)),
+    exp = "within-spp"
+  ) %>% 
+  select(-one_of('sample'))
+
+# combine within-spp inputCOI & inputGDNA
+evenInputGdna$soup = as.character(evenInputGdna$soup)
+longInputCOI_within = longInputCOI_within %>% left_join(evenInputGdna, by = 'soup')
+str(longInputCOI_within)
+```
+
+
+```{r spike correction}
+#1-2 : 2-1 : 3-1 = 1:2:4
+#1-2=HAP10C, 2-1=HAP40c, 3-1=HAP20C, 
+dd <- dd %>%
+  group_by(sampleName) %>%
+  mutate(readSpike = mean(c(readNum[OTUID=='HAP10C']/1, readNum[OTUID=='HAP40C']/2, readNum[OTUID=='HAP20C']/4)),
+         mtagSpike = mean(c(mtagNum[OTUID=='HAP10C']/1, mtagNum[OTUID=='HAP40C']/2, mtagNum[OTUID=='HAP20C']/4))
+         )
+
+range(unique(dd$readSpike))
+range(unique(dd$mtagSpike))
+
+dd$readNumSpikeCorr = dd$readNum/dd$readSpike*3739
+dd$mtagNumSpikeCorr = dd$mtagNum/dd$mtagSpike*3005
+
+# remove rows with Inf and NaN values
+dd <- dd %>% 
+  filter(!is.na(readNumSpikeCorr)) %>% 
+  filter(readSpike != "Inf") %>% 
+  filter(!is.na(mtagSpike)) %>% 
+  filter(mtagSpike != "Inf")
+
+```
+
+```{r combine input}
+names(longInputCOI_within)
+unique(dd$exp)
+dim(longInputCOI_within)
+dim(dd)
+table(dd$soupRep)
+table(dd$pcrRep)
+
+#delete spike
+dd1 = subset(dd, OTUID!="HAP10C" & OTUID!="HAP20C" & OTUID!="HAP40C")
+longInputCOI_within$soup <- str_replace_all(longInputCOI_within$soup, c("a"="A", "b"="B", "c"="C", "d"="D", "e"="E", "f"="F", "g"="G"))
+dd2 = dd1 %>% 
+  left_join(longInputCOI_within, by=c('soup','OTUID',"exp"))
+dim(dd2)
+```
+
+```{r calculate mean}
+dd.mean <- dd2 %>% 
+  filter( OTUID != "HAP222" & OTUID != "HAP264") %>%
+  filter(readNum != 0) %>% 
+  group_by(exp, soup, OTUID) %>% 
+  summarise_at(vars(mtagNum, readNum, mtagNumSpikeCorr, readNumSpikeCorr,inputCOINum,inputGDNA), funs(mean)) %>%
+  arrange(exp, soup, OTUID)
+```
+
+
+```{r prepare for figures}
+qseqMeanEven=dd.mean
+qseqMeanEven <- na.omit(qseqMeanEven)
+```
+
+```{r plot comparision}
+plot(log(inputCOINum)~ log(mtagNum), qseqMeanEven)
+plot(log(inputCOINum)~log(mtagNumSpikeCorr),qseqMeanEven)
+```
+
+```{r linear models}
+lmMtagNum <- lm(log10(inputCOINum) ~ log10(mtagNum) + OTUID, qseqMeanEven)
+summary(lmMtagNum)
+
+lmmtagNumSpike <- lm(log10(inputCOINum) ~ log10(mtagNumSpikeCorr) + OTUID, qseqMeanEven)
+summary(lmmtagNumSpike)
+
+lmReadNum <- lm(log10(inputCOINum) ~ log10(readNum) + OTUID, qseqMeanEven)
+summary(lmReadNum)
+
+lmreadNumSpike <- lm(log10(inputCOINum) ~ log10(readNumSpikeCorr) + OTUID, qseqMeanEven)
+summary(lmreadNumSpike)
+```
+
+
+
+```{r add predictions}
+#without normalised
+qseqMeanEven <- add_predictions(qseqMeanEven, lmMtagNum, var = 'predVsmtagNum')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmReadNum, var = 'predVsReadNum')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmmtagNumSpike, var = 'predVsMtagNumSpike')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmreadNumSpike, var = 'predVsReadNumSpike')
+```
+
+
+```{r make linear model figures}
+library(scales)
+p1 <- ggplot(qseqMeanEven) + 
+  geom_point(aes(y=inputCOINum, x = mtagNum, color = OTUID)) + 
+  geom_line(aes(x=mtagNum, y=10^(predVsmtagNum), color = OTUID)) + 
+  labs(x = 'non-spike-corrected UMI number', y = 'input COI copy number') + 
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + 
+  scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + 
+  theme(legend.position = "none") 
+
+p2 <- ggplot(qseqMeanEven) + geom_point(aes(y=inputCOINum, x = readNum, color = OTUID)) + geom_line(aes(x=readNum, y=10^(predVsReadNum), color = OTUID)) + labs(x = 'non-spike-corrected OTU size', y = 'Input COI copy number') + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+
+p3 <- ggplot(qseqMeanEven) + geom_point(aes(y=inputCOINum, x = mtagNumSpikeCorr, color = OTUID)) + geom_line(aes(x =mtagNumSpikeCorr, y=10^(predVsMtagNumSpike), color = OTUID)) + labs(x = 'spike-corrected UMI number', y = 'Input COI copy number') + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+
+p4 <- ggplot(qseqMeanEven) + geom_point(aes(y=inputCOINum, x = readNumSpikeCorr, color = OTUID)) + geom_line(aes(x=readNumSpikeCorr, y=10^(predVsReadNumSpike), color = OTUID)) +  labs(x = 'spike-corrected OTU size', y = 'Input COI copy number') + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+ 
+p2 + p4
+p1 + p3
+```
+
+
+```{r linear model GDNA}
+lmGDNA_MtagNum <- lm(log10(inputGDNA) ~ log10(mtagNum) + OTUID, qseqMeanEven)
+lmGDNA_ReadNum <- lm(log10(inputGDNA) ~ log10(readNum) + OTUID, qseqMeanEven)
+lmGDNA_MtagNumSpike <- lm(log10(inputGDNA) ~ log10(mtagNumSpikeCorr) + OTUID, qseqMeanEven)
+lmGDNA_ReadNumSpike <- lm(log10(inputGDNA) ~ log10(readNumSpikeCorr) + OTUID, qseqMeanEven)
+```
+
+
+```{r add predictions of gDNA}
+qseqMeanEven <- add_predictions(qseqMeanEven, lmGDNA_MtagNum, var = 'predVsGDNA.mtagNum')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmGDNA_ReadNum, var = 'predVsGDNA.readNum')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmGDNA_MtagNumSpike, var = 'predVsGDNA.mtagNumSpike')
+qseqMeanEven <- add_predictions(qseqMeanEven, lmGDNA_ReadNumSpike, var = 'predVsGDNA.readNumSpike')
+```
+
+
+```{r ggplot gDNA} 
+p5 <- ggplotGDNA_MtagNum <- ggplot(qseqMeanEven) + geom_point(aes(y=inputGDNA, x = mtagNum, color = OTUID)) + geom_line(aes(x=mtagNum, y=10^(predVsGDNA.mtagNum), color = OTUID)) + labs(x = 'non-spike-corrected UMI number', y = 'Input Genomic DNA mass') + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+
+p6 <- ggplotGDNA_ReadNum <- ggplot(qseqMeanEven) + geom_point(aes(y= inputGDNA, x = readNum, color = OTUID)) + geom_line(aes(x=readNum, y=10^predVsGDNA.readNum, color = OTUID)) + labs(x = 'non-spike-corrected OTU size', y = 'Input Genomic DNA mass') + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+
+p7 <- ggplotGDNA_mtagNumSpike <- ggplot(qseqMeanEven) + geom_point(aes(y=inputGDNA, x = mtagNumSpikeCorr, color = OTUID)) + geom_line(aes(x = mtagNumSpikeCorr, y=10^(predVsGDNA.mtagNumSpike), color = OTUID)) + labs(x = 'spike-corrected MT number', y = 'input genomic DNA mass') + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x))) + theme(legend.position = "none")
+
+p8 <- ggplotGDNA_readNumSpike <- ggplot(qseqMeanEven) + geom_point(aes(y=inputGDNA, x = readNumSpikeCorr, color = OTUID)) + geom_line(aes(x=readNumSpikeCorr, y= 10^predVsGDNA.readNumSpike, color = OTUID)) +  labs(x = 'spike-corrected read number', y = 'input genomic DNA mass') + theme(legend.position = "none") + scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x), labels = trans_format("log10", math_format(10^.x))) + scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),  labels = trans_format("log10", math_format(10^.x)))
+
+p6 + p8 + p5 + p7
+
+```
+
