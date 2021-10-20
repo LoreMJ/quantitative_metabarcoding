@@ -1,0 +1,198 @@
+---
+title: "ME dilution"
+author: "Mingjie"
+date: "7/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F) #if echo = T, figures are showed in rmd
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r setup, eval=TRUE, include=FALSE}
+# script-specific packages
+#install.packages("broom.mixed")
+#install.packages("MuMIn")
+#install.packages("sjPlot")
+#install.packages("equatiomatic")
+#install.packages("lmerTest")
+
+suppressPackageStartupMessages({
+  library(sjPlot)
+  library(broom.mixed)
+  library(lme4)
+  library(MuMIn)
+  library(equatiomatic)
+  library(lmerTest)
+})
+
+# general-use packages
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(here)
+  library(fs)
+  library(glue)
+  library(readxl)
+  library(cowplot)
+  library(lubridate)
+  library(patchwork)
+  library(broom)
+  library(ggeffects)
+  library(viridis)
+  library(arsenal) # for tableby()
+  library(waldo) # for compare()
+  library(sjmisc) # for rotate_df()
+  library(envDocument) #not available 
+  library(inspectdf)
+  library(conflicted)
+  library(knitr)
+  library(beepr)
+  library(pivottabler)
+  library(furrr)
+  library(scales)
+  library(janitor)
+  library(tictoc)
+})
+
+# Sometimes, two or more packages use the same function names. The {conflicted} package lets you set which package gets precedence. For example, the next line enforces that filter() refers to the {dplyr} package. If you want to use the command filter() from a different package, you just need to precede it with the desired package name like this: stats::filter.
+conflict_prefer("mutate", "dplyr", quiet = TRUE)
+conflict_prefer("select", "dplyr", quiet = TRUE)
+conflict_prefer("summarise", "dplyr", quiet = TRUE)
+conflict_prefer("filter", "dplyr", quiet = TRUE)
+conflict_prefer("first", "dplyr", quiet = TRUE)
+conflict_prefer("here", "here", quiet = TRUE)
+conflict_prefer("separate", "tidyr", quiet = TRUE)
+conflict_prefer("unite", "tidyr", quiet = TRUE)
+conflict_prefer("trim", "sjmisc", quiet=TRUE)
+conflict_prefer("rescale", "scales", quiet=TRUE)
+conflict_prefer("intersect", "dplyr", quiet = TRUE)
+conflict_prefer("setdiff", "dplyr", quiet = TRUE) # w/out this, R crashes
+conflict_prefer("to_factor", "sjmisc", quiet = TRUE)
+conflict_prefer("trim", "glue", quiet = TRUE)
+conflict_prefer("discard", "purrr", quiet = TRUE)
+conflict_prefer("extract", "tidyr", quiet = TRUE)
+conflict_prefer("lmer", "lme4", quiet = TRUE)
+conflict_prefer("col_facotr", "scales")
+
+# Print real numbers, not scientific notation.
+options(scipen = 999)
+```
+
+```{r}
+dd <- read.csv(here('data/Malaise-trap_Samples_20211019.csv'), header = T)
+str(dd)
+```
+
+
+```{r}
+p0 <- ggplot(dd, aes(x = inputDNA, y = FSL)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    theme_cowplot()
+p0.1 <-  ggplot(dd, aes(x = log(inputDNA), y = log(FSL))) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    theme_cowplot()
+p0 + p0.1
+
+p0.2 <-  ggplot(dd, aes(x = log(inputDNA), y = log(OTUsize))) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    theme_cowplot()
+p0.3 <- ggplot(dd, aes(x = inputDNA, y = OTUsize)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    theme_cowplot()
+p0.2+p0.3
+#both x and y need log
+dd$log.OTUsize <- log(dd$OTUsize)
+dd$log.inputDNA <- log(dd$inputDNA)
+dd$log.FSL <- log(dd$FSL)
+```
+
+```{r mix effects model choose}
+lmer1 <- lmer(log.inputDNA ~ log.FSL + (1 | sample), data = dd, REML = F)
+summary(lmer1)
+
+lmer2 <-lmer(log.inputDNA ~ log.FSL + (1 | OTU), data = dd, REML = F)
+summary(lmer2)
+
+lmer3 <- lmer(log.inputDNA ~ log.FSL + (1 | sample/ OTU), data = dd, REML = F)
+summary(lmer3)
+AIC(lmer1, lmer2, lmer3) #lmer3 has lowest AIC 
+
+#random slope and intercept
+lmer4<- lmer(log.inputDNA ~ log.FSL +(log.FSL | sample/OTU), data = dd, REML = F)
+summary(lmer4) #model is too comlicated for this data
+AIC(lmer3, lmer4) #model 3 has lower AIC, don't use random slope
+
+#if we can remove FSL
+lmer5 <- lmer(log.inputDNA ~ 1 + (1 | sample/OTU), data = dd, REML = F)
+summary(lmer5)
+anova(lmer3, lmer5) # two models are significantly different, keep FSL in model
+
+model.final <- lmer(log.inputDNA ~ log.FSL + (1 | sample/ OTU), data = dd, REML = T)
+
+summary(model.final)
+AIC(model.final)
+
+r.squaredGLMM(model.final)
+```
+
+```{r}
+lmer_FSL <- lmer(log.inputDNA ~ log.FSL + (1 | sample/OTU), data = dd, REML = T)
+summary(lmer_FSL)
+
+pred.mm <- ggpredict(lmer_FSL, terms = c("log.FSL[all]"))
+
+dd$sample2 <-  str_replace_all(dd$sample, c("123545.M1.S1" = "Sample 1", "124031.M1.S1" = "Sample 2", "286789.M1.S1" = "Sample 3", "357256.M2.S1" = "Sample 4", "700239.M1.S1" = "Sample 5", "HB.053.M1.S1" = "Sample 6", "HB.216.M1.S1" = "Sample 7"))
+
+p1 <- ggplot(pred.mm) + 
+   geom_line(aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(aes(x = x, ymin = predicted - std.error,  # error band
+        ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = dd, 
+        aes(x = log.FSL, y = log.inputDNA, colour = OTU)) + 
+   labs(x = "spike-corrected OTU size", y = "input genomic DNA mass") + 
+   theme_cowplot() +
+   theme(legend.position = "none") +
+   facet_wrap(~sample2)
+
+p1
+```
+
+
+
+
+
+```{r OTU size }
+lmer_otusize1 <- lmer(log.inputDNA ~ log.OTUsize + (1| sample), data = dd, REML = F )
+lmer_otusize2 <- lmer(log.inputDNA ~ log.OTUsize + (1| sample/OTU), data = dd, REML = F)
+lmer_otusize3 <- lmer(log.inputDNA ~ 1 + (1 | sample), data = dd, REML = F)
+lmer_otusize4 <- lmer(log.inputDNA ~ 1 + (1 | sample/OTU), data = dd, REML = F)
+AIC(lmer_otusize1, lmer_otusize2, lmer_otusize3,lmer_otusize4) 
+
+lmer_otusize <- lmer_otusize3 <- lmer(log.inputDNA ~ 1 + (1 | sample), data = dd, REML = T)
+r.squaredGLMM(lmer_otusize) #0 0
+
+fitted.otusize <- fitted(lmer_otusize)
+
+p2 <- ggplot(dd) + 
+   geom_line(aes(x = dd$log.OTUsize, y = fitted.otusize)) + 
+   geom_point(data = dd, aes(x = log.OTUsize, y = log.inputDNA, colour = OTU)) + 
+   labs(x = "non-spike-corrected OTU size", y = "input genomic DNA mass") + 
+   theme_cowplot()+
+   theme(legend.position = "none")+
+   facet_wrap(~sample2)
+
+p2+ p1
+```
+
+`
