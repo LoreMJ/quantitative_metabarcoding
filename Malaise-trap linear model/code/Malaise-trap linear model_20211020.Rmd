@@ -1,0 +1,184 @@
+---
+title: "dilution linear model"
+author: "Mingjie"
+date: "10/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r library packages}
+library(tidyverse)
+library(lulu)
+library(sjmisc)
+library(modelr)
+library(here)
+library(cowplot)
+library(patchwork)
+```
+spike 1-2: OTU1
+spike 2-1: OTU16
+spike 3-1: OTU2
+
+```{r read in data}
+otus <- read.table(here('data', 'sumaclust_97_otutalbe.txt'), sep = '\t', header = T)
+lysisbuffer <- read.csv(here('data', 'lysis_buffer_volume_20200724.csv'), header = T)
+seqs <- otus[,c(1,71)]
+otus <- otus[,-71]
+dilution_otus <- otus[,c(1,24:70)]
+dilution_otus <- column_to_rownames(dilution_otus, var="OTU")
+dilution_rowsum <- rowSums(dilution_otus) #sum within rows. Sum OTU reads through samples.
+dilution_otuID <- names(which(dilution_rowsum >= 1)) 
+dilution_otus <- rownames_to_column(dilution_otus, var = "OTU")
+dilution_otus <- dplyr::filter(dilution_otus, OTU %in% dilution_otuID) #1348 OTUs to 1245 OTUs
+
+seqs <- dplyr::filter(seqs, OTU %in% dilution_otuID) # this will be used to make matchlist
+#write.table(seqs, file = "dilution_otus_seqs.txt", row.names = F, col.names = F, quote = F, sep = ":")
+matchlist <- read.table(here('data','sumaclust_matchlist.txt'))
+dilution_otus <- column_to_rownames(dilution_otus, var = "OTU")
+```
+
+
+```{r lulu}
+lulu_results <- lulu(dilution_otus, matchlist)
+lulu_otus <- lulu_results$curated_table #1245 OTUs collapse to 472 OTUs. 
+
+names(lulu_otus)
+
+colnames(lulu_otus) <- c("357256.M2.S1.E", "HB.053.M1.S1.E", "357256.M2.S1.B", "357256.M2.S1.D", "HB.053.M1.S1.B", "HB.053.M1.S1.D", "286789.M1.S1.D", "124031.M1.S1.E", "700239.M1.S1.D", "286789.M1.S1.C", "357256.M2.S1.C", "700239.M1.S1.C", "HB.053.M1.S1.C", "357256.M2.S1.A", "286789.M1.S1.B", "HB.053.M1.S1.A", "700239.M1.S1.B", "286789.M1.S1.F", "700239.M1.S1.F", "124031.M1.S1.B", "124031.M1.S1.D", "286789.M1.S1.A", "286789.M1.S1.E", "700239.M1.S1.E", "700239.M1.S1.A", "123545.M1.S1.D", "124031.M1.S1.C", "123545.M1.S1.C", "124031.M1.S1.A", "123545.M1.S1.B", "123545.M1.S1.F", "123545.M1.S1.A", "123545.M1.S1.E", "PNC59", "PNC58", "HB.216.M1.S1.F", "HB.216.M1.S1.E", "HB.053.M1.S1.F", "124031.M1.S1.F", "HB.216.M1.S1.D", "357256.M2.S1.F", "HB.216.M1.S1.C",  "HB.216.M1.S1.B", "HB.216.M1.S1.A","PNC57", "PNC56", "PNC55")
+
+lulu_otus <- rownames_to_column(lulu_otus, var = "OTU")
+#write.table(lulu_otus, file = "dilution_otutable_lulu.txt", row.names = F, quote = F)
+
+#delete OTUs have stopcodons
+lulu_otus <- dplyr::filter(lulu_otus, ! OTU %in% c("OTU244", "OTU943"))
+```
+
+spike 1-2: OTU1
+spike 2-1: OTU16
+spike 3-1: OTU2
+
+```{r reformate data }
+which(lulu_otus$OTU == "OTU1") #1
+which(lulu_otus$OTU == "OTU2") #129
+which(lulu_otus$OTU == "OTU16") #105
+lulu_otus[1,1] = "spike1-2"
+lulu_otus[129,1] = "spike3-1"
+lulu_otus[105,1] = "spike2-1"
+
+longReadNum <- pivot_longer(lulu_otus, names_to = "sampleName", values_to = "OTUsize", -OTU)
+dd=longReadNum
+
+#parse sample information
+dd$soup = substr(dd$sampleName,1,12)
+dd$dilution = substr(dd$sampleName,14,14)
+dd$sample = substr(dd$sampleName,1,12)
+```
+
+
+#spike 1-2 failed in few samples, I decided to use only 2 spikes
+```{r spike correction with 2 speceis}
+#3-1:2-1=1:9
+dd <- dd %>%
+      dplyr::group_by(sampleName) %>%
+      filter( ! sampleName %in% c("PNC55","PNC56", "PNC57", "PNC58", "PNC59") )%>% 
+      dplyr::mutate(readSpikeSum = (OTUsize[OTU=='spike2-1']/9 + OTUsize[OTU=='spike3-1'])/2)
+
+range(dd$readSpikeSum) # 1305 - 191263    
+```
+
+
+
+```{r add input}
+dd$inputDNA <- substr(dd$sampleName, nchar(dd$sampleName), nchar(dd$sampleName))
+dd$inputDNA <- str_replace_all(dd$inputDNA, c("A"="1", "B"="0.7", "C"="0.49", "D"="0.343", "E"="0.24", "F"="0.16"))
+dd$inputDNA <- as.numeric(dd$inputDNA)
+
+```
+
+#we need to log data, 0 can not be logged
+```{r rm 0}
+dd <- dd %>%
+  dplyr::filter(OTUsize != 0) %>% 
+  arrange(sampleName)
+```
+
+```{r calculate FSL}
+lysisbuffer <- lysisbuffer %>% dplyr::filter(sample %in% c("123545_M1_S1", "124031_M1_S1", "286789_M1_S1", "357256_M2_S1", "700239_M1_S1", "HOBO_053_M1_S1","HOBO_216_M1_S1"))
+
+lysisbuffer$sample <- str_replace_all(lysisbuffer$sample, "_", ".")
+lysisbuffer$sample <- str_replace(lysisbuffer$sample, "HOBO", "HB")
+dd <- full_join(dd, lysisbuffer)
+dd <- dd %>% 
+  mutate(lysisBufferFrac = aliquot/added.lysis.buffer.ml.) %>% 
+  mutate(FSL = OTUsize/(readSpikeSum*lysisBufferFrac)*1305)
+```
+
+```{r rm spike}
+dd <- dd %>% 
+  dplyr::filter(! OTU %in% c("spike1-2", "spike2-1", "spike3-1"))
+```
+
+
+```{r write table}
+#write.csv(dd, file="dilutionSamples_2020819.csv", row.names = F, quote = F)
+```
+
+
+```{r linear model GDNA}
+plot(log(dd$inputDNA) ~ log(dd$OTUsize))
+lmGDNA_OTUsize <- lm(log10(inputDNA) ~ log10(OTUsize) + OTU, dd)
+lmGDNA_FSL <- lm(log10(inputDNA) ~ log10(FSL) + OTU, dd)
+
+summary(lmGDNA_OTUsize)
+summary(lmGDNA_FSL)
+```
+
+
+
+```{r ggplot gDNA}
+dd$sample2 <-  str_replace_all(dd$sample, c("123545.M1.S1" = "Sample 1", "124031.M1.S1" = "Sample 2", "286789.M1.S1" = "Sample 3", "357256.M2.S1" = "Sample 4", "700239.M1.S1" = "Sample 5", "HB.053.M1.S1" = "Sample 6", "HB.216.M1.S1" = "Sample 7"))
+
+dd <- add_predictions(dd, lmGDNA_OTUsize, var = 'fittedOTUsize')
+dd <- add_predictions(dd, lmGDNA_FSL, var = 'fittedFSL')
+
+#ggplotGDNA_OTUsize <- ggplot(dd) + 
+#  geom_point(aes(y=log10(inputDNA), x = log10(OTUsize), color = OTU)) +   
+#  geom_line(aes(x=log10(OTUsize), y=fittedOTUsize, color = OTU)) + 
+#  labs(x = 'non-spike-corrected OTU size', y = 'Input genomic DNA mass') + 
+#  theme(legend.position = "none") +
+#  facet_wrap(~sample2)
+
+#ggplotGDNA_FSL <- ggplot(dd) + 
+#  geom_point(aes(y=log10(inputDNA), x = log10(FSL), color = OTU))+   
+#  geom_line(aes(x=log10(FSL), y=fittedFSL, color = OTU)) +
+# labs(x = 'spike-corrected OTU size', y = 'input genomic DNA mass') + 
+#  theme(legend.position = "none") + 
+#  facet_wrap(~sample2)
+
+# ggplotGDNA_OTUsize + ggplotGDNA_FSL
+
+#use geom_smooth
+ggplotGDNA_OTUsize2 <- ggplot(dd) + 
+  geom_point(aes(y=log10(inputDNA), x = log10(OTUsize), color = OTU)) + 
+  geom_smooth(aes(x = log10(OTUsize), y = log10(inputDNA), color = OTU), method = lm, se = FALSE, method.args = list()) +  
+  labs(x = 'non-spike-corrected OTU size', y = 'input genomic DNA mass') + 
+  theme(legend.position = "none") + 
+  facet_wrap(~sample2) 
+
+ggplotGDNA_FSL2 <- ggplot(dd) + 
+  geom_point(aes(y=log10(inputDNA), x = log10(FSL), color = OTU)) + 
+  geom_smooth(aes(x = log10(FSL), y = log10(inputDNA), color = OTU), method = lm, se = FALSE) +  
+  labs(x = 'spike-corrected OTU size', y = 'input genomic DNA mass') + 
+  theme(legend.position = "none") +
+  facet_wrap(~sample2)
+
+ggplotGDNA_OTUsize2 + ggplotGDNA_FSL2
+
+
+#ggsave("inputDNA_OTUsize.pdf", ggplotGDNA_OTUsize2, width = 6, height = 6)
+#ggsave("inputDNA_FSL.pdf", ggplotGDNA_FSL2, width = 6, height = 6)
+```
