@@ -1,0 +1,1146 @@
+---
+title: "mixed effects"
+author: "Mingjie"
+date: "7/4/2021"
+output: html_document
+---
+
+```{r setup, eval=TRUE, include=FALSE}
+# boilerplate package loading chunk
+
+# script-specific packages
+suppressPackageStartupMessages({
+  library(sjPlot)
+  library(broom.mixed)
+  library(lme4)
+  library(MuMIn)
+  library(lmtest)
+  library(lattice)
+  library(equatiomatic)
+  library(DataExplorer)
+  library(mvabund)
+})
+
+# general-use packages
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(here)
+  library(fs)
+  library(glue)
+  library(readxl)
+  library(cowplot)
+  library(lubridate)
+  library(patchwork)
+  library(broom)
+  library(ggeffects)
+  library(viridis)
+  library(arsenal) # for tableby()
+  library(waldo) # for compare()
+  library(sjmisc) # for rotate_df()
+  library(envDocument)
+  library(inspectdf)
+  library(conflicted)
+  library(knitr)
+  library(beepr)
+  library(pivottabler)
+  library(furrr)
+  library(scales)
+  library(janitor)
+  library(tictoc)
+  library(ragg)
+})
+
+# Sometimes, two or more packages use the same function names. The {conflicted} package lets you set which package gets precedence. For example, the next line enforces that filter() refers to the {dplyr} package. If you want to use the command filter() from a different package, you just need to precede it with the desired package name like this: stats::filter.
+conflict_prefer("filter", "dplyr", quiet = TRUE)
+conflict_prefer("mutate", "dplyr", quiet = TRUE)
+conflict_prefer("select", "dplyr", quiet = TRUE)
+conflict_prefer("summarise", "dplyr", quiet = TRUE)
+conflict_prefer("first", "dplyr", quiet = TRUE)
+conflict_prefer("here", "here", quiet = TRUE)
+conflict_prefer("separate", "tidyr", quiet = TRUE)
+conflict_prefer("unite", "tidyr", quiet = TRUE)
+conflict_prefer("trim", "sjmisc", quiet = TRUE)
+conflict_prefer("rescale", "scales", quiet = TRUE)
+conflict_prefer("intersect", "dplyr", quiet = TRUE)
+conflict_prefer("setdiff", "dplyr", quiet = TRUE) # w/out this, R crashes
+conflict_prefer("to_factor", "sjmisc", quiet = TRUE)
+conflict_prefer("trim", "glue", quiet = TRUE)
+conflict_prefer("discard", "purrr", quiet = TRUE)
+conflict_prefer("extract", "tidyr", quiet = TRUE)
+conflict_prefer("col_factor", "readr", quiet = TRUE)
+
+# R version
+R.version.string
+# Print real numbers, not scientific notation.
+options(scipen = 999)
+```
+
+```{r load and explore data}
+here()
+mydata <- read_table(here("data", "mocksoup_longtable.txt"))
+
+# introduce(mydata)
+# plot_intro(mydata)
+# plot_missing(mydata)
+# plot_bar(mydata)
+# plot_histogram(mydata)
+```
+
+```{r log predictors and responses}
+mydata$log.readNum <- log(mydata$readNum + 1)
+mydata$log.inputCOINum <- log(mydata$inputCOINum + 1)
+mydata$log.mtagNum <- log(mydata$mtagNum + 1)
+mydata$log.inputGDNA <- log(mydata$inputGDNA + 1)
+mydata$log.mtagNumSpikeCorr <- log(mydata$mtagNumSpikeCorr + 1)
+mydata$log.readNumSpikeCorr <- log(mydata$readNumSpikeCorr + 1)
+plot_missing(mydata) # some PCRs produced 0 reads, set to zero with log(x+1)
+plot_histogram(mydata) # these OTUs don't have inputCOINum values
+str(mydata)
+
+# not run
+# mydata <- mydata %>%
+#   #   filter(readNum != 0) %>% 
+#   filter(!OTUID %in% c("HAP222", "HAP264")) 
+```
+
+################################ mixed effects model #############################
+
+```{r COI spike-corrected readNum}
+# test random effects
+lmer_coi_readSpikeCorr1 <- lmer(log.inputCOINum ~ log.readNumSpikeCorr +
+  (log.readNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = FALSE)
+summary(lmer_coi_readSpikeCorr1)
+plot(lmer_coi_readSpikeCorr1)
+
+lmer_coi_readSpikeCorr2 <- lmer(log.inputCOINum ~ log.readNumSpikeCorr +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = FALSE)
+summary(lmer_coi_readSpikeCorr2)
+plot(lmer_coi_readSpikeCorr2)
+
+lmer_coi_readSpikeCorr3 <- lmer(log.inputCOINum ~ log.readNumSpikeCorr +
+   (1 | soupRep/pcrRep), data = mydata, REML = FALSE)
+# singular fit
+summary(lmer_coi_readSpikeCorr3)
+plot(lmer_coi_readSpikeCorr3)
+
+AIC(lmer_coi_readSpikeCorr1, lmer_coi_readSpikeCorr2, lmer_coi_readSpikeCorr3) # lmer_coi_readSpikeCorr1 has lower AIC, keep random intercept and slope, keep OTUID, soupRep, pcrRep
+
+# test fixed effects
+lmer_coi_readSpikeCorr4 <- lmer(log.inputCOINum ~ 1 +
+  (log.readNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+
+AIC(lmer_coi_readSpikeCorr1, lmer_coi_readSpikeCorr4) # lmer_coi_readSpikeCorr1
+anova(lmer_coi_readSpikeCorr1, lmer_coi_readSpikeCorr4) # significantly different. keep fixed effect
+
+# parameter estimates
+lmer_coi_readSpikeCorr5 <- lmer(log.inputCOINum ~ log.readNumSpikeCorr +
+  (log.readNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = TRUE)
+summary(lmer_coi_readSpikeCorr5)
+r.squaredGLMM(lmer_coi_readSpikeCorr5) # 0.416 0.96
+
+sresid <- resid(lmer_coi_readSpikeCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_coi_readSpikeCorr5)
+
+pred.mm1 <- ggpredict(lmer_coi_readSpikeCorr5, terms = c("log.readNumSpikeCorr"))
+
+(p1 <- ggplot() +
+  geom_line(
+    data = pred.mm1, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) +
+  geom_ribbon(
+    data = pred.mm1, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.3
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.readNumSpikeCorr, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.readNumSpikeCorr, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(x = "ln(spike-corrected OTU size)", y = "ln(input COI copy number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r COI non-spike-corrected readNum}
+lmer_coi_read1 <- lmer(log.inputCOINum ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_coi_read2 <- lmer(log.inputCOINum ~ log.readNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_coi_read3 <- lmer(log.inputCOINum ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+AIC(lmer_coi_read1, lmer_coi_read2, lmer_coi_read3) # choose lmer_coi_read1
+
+# test fixed effect
+lmer_coi_read4 <- lmer(log.inputCOINum ~ 1 +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+AIC(lmer_coi_read1, lmer_coi_read4)
+anova(lmer_coi_read1, lmer_coi_read4) # keep fixed effect
+
+# estimate parameters with lmer_coi_read1
+lmer_coi_read5 <- lmer(log.inputCOINum ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = TRUE)
+# singular fit
+summary(lmer_coi_read5)
+r.squaredGLMM(lmer_coi_read5) # MuMIn package 0.042 0.85
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_coi_read5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_coi_read5) # gives a heteroscedasticity plot
+
+pred.mm2 <- ggpredict(lmer_coi_read5, terms = c("log.readNum"))
+
+# Plot the predictions
+(p2 <- ggplot() +
+  geom_line(
+    data = pred.mm2, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + # slope
+  geom_ribbon(
+    data = pred.mm2, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.readNum, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.readNum, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(x = "ln(non-spike-corrected OTU size)", y = "ln(input COI copy number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r gDNA spike-corrected readNum}
+lmer_gDNA_readSpikeCorr1 <- lmer(log.inputGDNA ~ log.readNumSpikeCorr +
+   (log.readNumSpikeCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata, REML = FALSE)
+
+lmer_gDNA_readSpikeCorr2 <- lmer(log.inputGDNA ~ log.readNumSpikeCorr +
+   (1 | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata, REML = FALSE)
+
+lmer_gDNA_readSpikeCorr3 <- lmer(log.inputGDNA ~ log.readNumSpikeCorr +
+   (1 | soupRep / pcrRep), data = mydata, REML = FALSE)
+# singular fit
+
+AIC(lmer_gDNA_readSpikeCorr1, lmer_gDNA_readSpikeCorr2, lmer_gDNA_readSpikeCorr3) # lmer_gDNA_readSpikeCorr1 has lower AIC, use random intercept and slope, keep OTUID, soupRep, pcrRep
+
+# test fixed effects
+lmer_gDNA_readSpikeCorr4 <- lmer(log.inputGDNA ~ 1 +
+   (log.readNumSpikeCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata, REML = F)
+
+AIC(lmer_gDNA_readSpikeCorr1, lmer_gDNA_readSpikeCorr4) # choose lmer_gDNA_readSpikeCorr1
+anova(lmer_gDNA_readSpikeCorr1, lmer_gDNA_readSpikeCorr4) # significantly different. keep fixed effect
+
+
+# fit model
+lmer_gDNA_readSpikeCorr5 <- lmer(log.inputGDNA ~ log.readNumSpikeCorr +
+   (log.readNumSpikeCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata, REML = TRUE)
+summary(lmer_gDNA_readSpikeCorr5)
+r.squaredGLMM(lmer_gDNA_readSpikeCorr5) # 0.531 0.96
+#
+sresid <- resid(lmer_gDNA_readSpikeCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_gDNA_readSpikeCorr5)
+plot(sresid ~ mydata$log.readNumSpikeCorr)
+#
+pred.mm3 <- ggpredict(lmer_gDNA_readSpikeCorr5, terms = c("log.readNumSpikeCorr"))
+#
+(p3 <- ggplot() +
+  geom_line(
+    data = pred.mm3, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + 
+  geom_ribbon(
+    data = pred.mm3, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.readNumSpikeCorr, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.readNumSpikeCorr, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  ylim(2.3, 4.7) +
+  labs(x = "ln(spike-corrected OTU size)", y = "ln(input genomic DNA)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r gDNA non-spike-corrected readNum}
+lmer_gDNA_read1 <- lmer(log.inputGDNA ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_gDNA_read2 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_gDNA_read3 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+
+AIC(lmer_gDNA_read1, lmer_gDNA_read2, lmer_gDNA_read3) # lmer_gDNA_read3
+
+# fixed effect
+lmer_gDNA_read4 <- lmer(log.inputGDNA ~ 1 +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+AIC(lmer_gDNA_read3, lmer_gDNA_read4) # keep fixed effect
+anova(lmer_gDNA_read3, lmer_gDNA_read4) 
+
+
+######## final model###########
+lmer_gDNA_read5 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata, REML = T)
+# singular fit
+r.squaredGLMM(lmer_gDNA_read5) # 0.005 0.005
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_gDNA_read5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_gDNA_read5) # gives a heteroscedasticity plot
+
+plot(sresid ~ mydata$log.readNum)
+
+pred.mm4 <- ggpredict(lmer_gDNA_read5, terms = c("log.readNum"))
+
+# Plot the predictions
+(p4 <- ggplot() +
+  geom_line(
+    data = pred.mm4, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + # slope
+  geom_ribbon(
+    data = pred.mm4, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.readNum, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.readNum, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  ylim(2.3, 4.7) +
+  labs(x = "ln(non-spike-corrected OTU size)", y = "ln(Input Genomic DNA)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+
+(p4 + p3)
+(p2 + p1) / (p4 + p3)
+```
+
+
+```{r gDNA non-spike-corrected UMI number}
+lmer_gDNA_UMI1 <- lmer(log.inputGDNA ~ log.mtagNum +
+  (log.mtagNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_gDNA_UMI2 <- lmer(log.inputGDNA ~ log.mtagNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_gDNA_UMI3 <- lmer(log.inputGDNA ~ log.mtagNum +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+
+AIC(lmer_gDNA_UMI1, lmer_gDNA_UMI2, lmer_gDNA_UMI3) # lmer_gDNA_UMI1
+
+# fixed effect
+lmer_gDNA_UMI4 <- lmer(log.inputGDNA ~ 1 +
+  (log.mtagNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+AIC(lmer_gDNA_UMI1, lmer_gDNA_UMI4) # lmer_gDNA_UMI1
+anova(lmer_gDNA_UMI1, lmer_gDNA_UMI4) # lmer_gDNA_UMI1
+
+lmer_gDNA_UMI5 <- lmer(log.inputGDNA ~ log.mtagNum +
+  (log.mtagNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = T)
+
+r.squaredGLMM(lmer_gDNA_UMI5) # MuMIn package 0.015 0.033
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_gDNA_UMI5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_gDNA_UMI5) # gives a heteroscedasticity plot
+
+plot(sresid ~ mydata$log.mtagNum)
+
+pred.mm5 <- ggpredict(lmer_gDNA_UMI5, terms = c("log.mtagNum"))
+
+# Plot the predictions
+(p5 <- ggplot() +
+  geom_line(data = pred.mm5, aes(x = x, y = predicted),
+            colour = "black", size = 1) + # slope
+  geom_ribbon(
+    data = pred.mm5, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.mtagNum, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.mtagNum, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(y = "ln(Input Genomic DNA)", x = "ln(non-spike-corrected UMI number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r gDNA spike-corrected UMI number}
+lmer_gDNA_UMIspikeCorr1 <- lmer(log.inputGDNA ~ log.mtagNumSpikeCorr +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+lmer_gDNA_UMIspikeCorr2 <- lmer(log.inputGDNA ~ log.mtagNumSpikeCorr +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+lmer_gDNA_UMIspikeCorr3 <- lmer(log.inputGDNA ~ log.mtagNumSpikeCorr +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+
+AIC(lmer_gDNA_UMIspikeCorr1, lmer_gDNA_UMIspikeCorr2, lmer_gDNA_UMIspikeCorr3) # lmer_gDNA_UMIspikeCorr1
+
+# fixed effect
+lmer_gDNA_UMIspikeCorr4 <- lmer(log.inputGDNA ~ 1 +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# failure to converge
+AIC(lmer_gDNA_UMIspikeCorr1, lmer_gDNA_UMIspikeCorr4) # lmer_gDNA_UMIspikeCorr1
+
+# parameter estimate
+lmer_gDNA_UMIspikeCorr5 <- lmer(log.inputGDNA ~ log.mtagNumSpikeCorr +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = T)
+
+r.squaredGLMM(lmer_gDNA_UMIspikeCorr5) # 0.52 0.94
+sresid <- resid(lmer_gDNA_UMIspikeCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_gDNA_UMIspikeCorr5)
+plot(sresid ~ mydata$log.mtagNumSpikeCorr)
+
+pred.mm6 <- ggpredict(lmer_gDNA_UMIspikeCorr5, terms = c("log.mtagNumSpikeCorr"))
+
+(p6 <- ggplot() +
+  geom_line(data = pred.mm6, aes(x = x, y = predicted),
+            colour = "black", size = 1) + # slope
+  geom_ribbon(
+    data = pred.mm6, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.mtagNumSpikeCorr, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.mtagNumSpikeCorr, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  ylim(2.3, 4.7) + 
+  labs(y = "ln(Input Genomic DNA)", x = "ln(spike-corrected UMI number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r COI non-spike-corrected UMI number}
+lmer_COI_UMIspike1 <- lmer(log.inputCOINum ~ log.mtagNum +
+  (log.mtagNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_COI_UMIspike2 <- lmer(log.inputCOINum ~ log.mtagNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+lmer_COI_UMIspike3 <- lmer(log.inputCOINum ~ log.mtagNum +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+
+AIC(lmer_COI_UMIspike1, lmer_COI_UMIspike2, lmer_COI_UMIspike3) # lmer_gDNA_UMIspikeCorr1
+
+# fixed effect
+lmer_COI_UMIspike4 <- lmer(log.inputCOINum ~ 1 +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+AIC(lmer_COI_UMIspike1, lmer_COI_UMIspike4) # lmer_COI_UMIspikeCorr1
+anova(lmer_COI_UMIspike1, lmer_COI_UMIspike4) 
+
+# parameter estimate
+lmer_COI_UMIspike5 <- lmer(log.inputCOINum ~ log.mtagNum +
+  (log.mtagNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = T)
+# singular fit
+r.squaredGLMM(lmer_COI_UMIspike5) # 0.054 0.85
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_COI_UMIspike5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_COI_UMIspike5) # gives a heteroscedasticity plot
+
+# plot(sresid ~ mydata$log.mtagNum)
+
+pred.mm7 <- ggpredict(lmer_COI_UMIspike5, terms = c("log.mtagNum"))
+
+# Plot the predictions
+(p7 <- ggplot() +
+  geom_line(data = pred.mm7, aes(x = x, y = predicted),
+            colour = "black", size = 1) + # slope
+  geom_ribbon(
+    data = pred.mm7, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.mtagNum, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.readNum, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(y = "ln(Input COI copy number)", x = "ln(non-spike-corrected UMI number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+```{r COI spike-corrected UMI number}
+lmer_COI_UMIspikeCorr1 <- lmer(log.inputCOINum ~ log.mtagNumSpikeCorr +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+lmer_COI_UMIspikeCorr2 <- lmer(log.inputCOINum ~ log.mtagNumSpikeCorr +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+lmer_COI_UMIspikeCorr3 <- lmer(log.inputCOINum ~ log.mtagNumSpikeCorr +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+# singular fit
+
+AIC(lmer_COI_UMIspikeCorr1, lmer_COI_UMIspikeCorr2, lmer_COI_UMIspikeCorr3) # lmer_gDNA_UMIspikeCorr1
+
+# fixed effect
+lmer_COI_UMIspikeCorr4 <- lmer(log.inputCOINum ~ 1 +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = F)
+
+AIC(lmer_COI_UMIspikeCorr1, lmer_COI_UMIspikeCorr4) # lmer_COI_UMIspikeCorr1
+anova(lmer_COI_UMIspikeCorr1, lmer_COI_UMIspikeCorr4) 
+
+# estimate parameters
+lmer_COI_UMIspikeCorr5 <- lmer(log.inputCOINum ~ log.mtagNumSpikeCorr +
+  (log.mtagNumSpikeCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata, REML = T)
+r.squaredGLMM(lmer_COI_UMIspikeCorr5) # 0.434 0.95
+
+sresid <- resid(lmer_COI_UMIspikeCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_COI_UMIspikeCorr5)
+
+pred.mm8 <- ggpredict(lmer_COI_UMIspikeCorr5, terms = c("log.mtagNumSpikeCorr"))
+
+(p8 <- ggplot() +
+  geom_line(data = pred.mm8, aes(x = x, y = predicted),
+            colour = "black", size = 1) + # slope
+  geom_ribbon(
+    data = pred.mm8, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata, aes(
+    x = log.mtagNumSpikeCorr, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata, aes(
+      x = log.mtagNumSpikeCorr, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(y = "ln(Input COI copy number)", x = "ln(spike-corrected UMI number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+
+p7 + p8
+(p7 + p8) / (p5 + p6) 
+```
+
+```{r figures}
+(p2 + p1) / (p7 + p8) + plot_annotation(tag_levels = 'A') # Figure 7
+(p4 + p3) / (p5 + p6) + plot_annotation(tag_levels = 'A') # Figure 8
+```
+
+#### Test of Warton spike-in estimator on full dataset, with OTUID, soupRep, and pcrRep   
+
+Upshot 1:  Warton's offset estimator is worse than a physical spike-in but better than not having it. With the offset estimator, the fixed-effect R2 = 10.3% for predicting input COI copy number (vs. 4.2% without) and R2 = 18.1% for predicting input genomic DNA (vs. 0.5% without). This is with 63 samples (= 7 soups X 3 soup replicates X 3 PCR replicates per soup) and 52 OTUs  
+
+Upshot 2:  When i reduce the dataset to 7 soups (averaging over the 3 soup replicates and 3 PCR replicates per soup) and 52 OTUs, Warton's method no longer works, presumably because of too little data. Averaging the physical spike-in still works (shown elsewhere by Mingjie's analysis, not here)  
+
+reformat data
+```{r reformat to mydata2}
+mydata2 <- mydata %>% 
+  select(-mtagNum, -exp, -lib, -sampleName, -PCR, -readSpike, -mtagSpike,
+         -readNumSpikeCorr, -mtagNumSpikeCorr, -inputCOINum, -inputGDNA,
+         -starts_with("log.")) %>% 
+  pivot_wider(names_from = OTUID, values_from = readNum)
+
+otu <- mydata2 %>% 
+  select(starts_with("HAP"))
+
+X <- mydata2 %>% 
+  select(!starts_with("HAP"))
+```
+
+Warton's spike-in estimator: offset0
+```{r calculate offset0 for mydata2}
+otu <- mvabund(otu)
+# fit0 <- manyglm(otu ~ 1, family = "negative.binomial") # if no predictors
+fit0 <- manyglm(otu ~ soup, family = "negative.binomial", data = X) # data = the env covariates. otu is the otu table
+# fit0 <- manyglm(otu ~ soup, family = binomial("cloglog")) # for p/a data
+offset0 <- log(rowSums(otu)) - log(rowSums(fitted(fit0))) 
+mydata2$offset0 <- offset0
+mydata2 <- mydata2 %>% 
+  mutate(
+    offset0_scale = rescale(offset0, to = c(1, 10))
+  ) %>% 
+  relocate(offset0, offset0_scale, .after = pcrRep) %>% 
+  pivot_longer(cols = starts_with("HAP"), 
+               names_to = "OTUID", 
+               values_to = "readNum") %>% 
+  mutate(
+    readNumOffsetCorr = readNum / offset0_scale
+  )
+
+mydata2 <- mydata %>% 
+  select(OTUID, soup, soupRep, pcrRep, inputCOINum, inputGDNA) %>% 
+  left_join(mydata2) %>% 
+  mutate(
+    log.inputCOINum = log(inputCOINum + 1),
+    log.inputGDNA = log(inputGDNA + 1),
+    log.readNum = log(readNum + 1),
+    log.readNumOffsetCorr = log(readNumOffsetCorr + 1)
+  )
+
+names(mydata2)
+```
+
+ [1] "OTUID"                 "soup"                  "soupRep"              
+ [4] "pcrRep"                "inputCOINum"           "inputGDNA"            
+ [7] "offset0"               "offset0_scale"         "readNum"              
+[10] "readNumOffsetCorr"     "log.inputCOINum"       "log.inputGDNA"        
+[13] "log.readNum"           "log.readNumOffsetCorr"
+
+prediction of input COI copy number
+```{r COI offset-corrected readNum}
+# test random effects
+lmer_coi_readOffsetCorr1 <- lmer(log.inputCOINum ~ log.readNumOffsetCorr +
+  (log.readNumOffsetCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = FALSE)
+summary(lmer_coi_readOffsetCorr1)
+plot(lmer_coi_readOffsetCorr1)
+# singular fit caused by zero variance in pcrRep:soupRep and soupRep, but these random factors must be retained because they are part of the experimental design
+lmer_coi_readOffsetCorr2 <- lmer(log.inputCOINum ~ log.readNumOffsetCorr +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = FALSE)
+summary(lmer_coi_readOffsetCorr2)
+plot(lmer_coi_readOffsetCorr2)
+# singular fit
+lmer_coi_readOffsetCorr3 <- lmer(log.inputCOINum ~ log.readNumOffsetCorr +
+   (1 | soupRep/pcrRep), data = mydata2, REML = FALSE)
+# singular fit
+summary(lmer_coi_readOffsetCorr3)
+plot(lmer_coi_readOffsetCorr3)
+
+AIC(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr2, lmer_coi_readOffsetCorr3) # lmer_coi_readOffsetCorr1 has lowest AIC, keep random intercept and slope, keep OTUID, soupRep, pcrRep
+
+# test fixed effects
+lmer_coi_readOffsetCorr4 <- lmer(log.inputCOINum ~ 1 +
+  (log.readNumOffsetCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+AIC(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr4) # lmer_coi_readOffsetCorr1
+anova(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr4) # significantly different. keep fixed effect
+
+# parameter estimates
+lmer_coi_readOffsetCorr5 <- lmer(log.inputCOINum ~ log.readNumOffsetCorr +
+  (log.readNumOffsetCorr | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = TRUE)
+# singular fit
+summary(lmer_coi_readOffsetCorr5)
+r.squaredGLMM(lmer_coi_readOffsetCorr5) # 0.1033 0.8676
+
+sresid <- resid(lmer_coi_readOffsetCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_coi_readOffsetCorr5)
+
+pred.mm1 <- ggpredict(lmer_coi_readOffsetCorr5, 
+                      terms = c("log.readNumOffsetCorr"))
+
+(p9 <- ggplot() +
+  geom_line(
+    data = pred.mm1, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) +
+  geom_ribbon(
+    data = pred.mm1, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.3
+  ) +
+  geom_point(data = mydata2, aes(
+    x = log.readNumOffsetCorr, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata2, aes(
+      x = log.readNumOffsetCorr, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(x = "ln(Offset-corrected OTU size)", y = "ln(input COI copy number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+should be exactly the same as "COI non-spike-corrected readNum"
+```{r COI non-offset-corrected readNum}
+lmer_coi_read1 <- lmer(log.inputCOINum ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+lmer_coi_read2 <- lmer(log.inputCOINum ~ log.readNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+lmer_coi_read3 <- lmer(log.inputCOINum ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+AIC(lmer_coi_read1, lmer_coi_read2, lmer_coi_read3) # choose lmer_coi_read1
+
+# test fixed effect
+lmer_coi_read4 <- lmer(log.inputCOINum ~ 1 +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+AIC(lmer_coi_read1, lmer_coi_read4)
+anova(lmer_coi_read1, lmer_coi_read4) # keep fixed effect
+
+# estimate parameters with lmer_coi_read1
+lmer_coi_read5 <- lmer(log.inputCOINum ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = TRUE)
+# singular fit
+summary(lmer_coi_read5)
+r.squaredGLMM(lmer_coi_read5) # 0.042 0.85
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_coi_read5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+plot(lmer_coi_read5) # gives a heteroscedasticity plot
+
+pred.mm2 <- ggpredict(lmer_coi_read5, terms = c("log.readNum"))
+
+# Plot the predictions
+(p10 <- ggplot() +
+  geom_line(
+    data = pred.mm2, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + # slope
+  geom_ribbon(
+    data = pred.mm2, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata2, aes(
+    x = log.readNum, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata2, aes(
+      x = log.readNum, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(x = "ln(non-Offset-corrected OTU size)", y = "ln(input COI copy number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+
+p10 + p9
+```
+
+prediction of input genomic DNA
+```{r gDNA offset-corrected readNum}
+lmer_gDNA_readOffsetCorr1 <- lmer(log.inputGDNA ~ log.readNumOffsetCorr +
+   (log.readNumOffsetCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata2, REML = FALSE)
+# singular fit
+summary(lmer_gDNA_readOffsetCorr1)
+lmer_gDNA_readOffsetCorr2 <- lmer(log.inputGDNA ~ log.readNumOffsetCorr +
+   (1 | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata2, REML = FALSE)
+# singular fit
+lmer_gDNA_readOffsetCorr3 <- lmer(log.inputGDNA ~ log.readNumOffsetCorr +
+   (1 | soupRep / pcrRep), data = mydata2, REML = FALSE)
+# singular fit
+
+AIC(lmer_gDNA_readOffsetCorr1, lmer_gDNA_readOffsetCorr2, lmer_gDNA_readOffsetCorr3) # lmer_gDNA_readOffsetCorr1 has lower AIC, use random intercept and slope, keep OTUID, soupRep, pcrRep
+
+# test fixed effects
+lmer_gDNA_readOffsetCorr4 <- lmer(log.inputGDNA ~ 1 +
+   (log.readNumOffsetCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+AIC(lmer_gDNA_readOffsetCorr1, lmer_gDNA_readOffsetCorr4) # choose lmer_gDNA_readOffsetCorr1
+anova(lmer_gDNA_readOffsetCorr1, lmer_gDNA_readOffsetCorr4) # significantly different. keep fixed effect
+
+
+# fit model
+lmer_gDNA_readOffsetCorr5 <- lmer(log.inputGDNA ~ log.readNumOffsetCorr +
+   (log.readNumOffsetCorr | OTUID) +
+   (1 | soupRep / pcrRep), data = mydata2, REML = TRUE)
+# singular fit
+summary(lmer_gDNA_readOffsetCorr5)
+r.squaredGLMM(lmer_gDNA_readOffsetCorr5) # 0.181 0.49
+#
+sresid <- resid(lmer_gDNA_readOffsetCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_gDNA_readOffsetCorr5)
+plot(sresid ~ mydata2$log.readNumOffsetCorr)
+#
+pred.mm3 <- ggpredict(lmer_gDNA_readOffsetCorr5, 
+                      terms = c("log.readNumOffsetCorr"))
+
+(p11 <- ggplot() +
+  geom_line(
+    data = pred.mm3, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + 
+  geom_ribbon(
+    data = pred.mm3, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata2, aes(
+    x = log.readNumOffsetCorr, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata2, aes(
+      x = log.readNumOffsetCorr, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  ylim(2.3, 4.7) +
+  labs(x = "ln(Offset-corrected OTU size)", y = "ln(input genomic DNA)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
+
+should be exactly the same as "gDNA non-spike-corrected readNum"
+```{r gDNA non-offset-corrected readNum}
+lmer_gDNA_read1 <- lmer(log.inputGDNA ~ log.readNum +
+  (log.readNum | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+summary(lmer_gDNA_read1)
+lmer_gDNA_read2 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | OTUID) +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+lmer_gDNA_read3 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+
+AIC(lmer_gDNA_read1, lmer_gDNA_read2, lmer_gDNA_read3) # lmer_gDNA_read3
+
+# fixed effect
+lmer_gDNA_read4 <- lmer(log.inputGDNA ~ 1 +
+  (1 | soupRep / pcrRep), data = mydata2, REML = F)
+# singular fit
+AIC(lmer_gDNA_read3, lmer_gDNA_read4) # keep fixed effect
+anova(lmer_gDNA_read3, lmer_gDNA_read4) 
+
+
+######## final model###########
+lmer_gDNA_read5 <- lmer(log.inputGDNA ~ log.readNum +
+  (1 | soupRep / pcrRep), data = mydata2, REML = T)
+# singular fit
+r.squaredGLMM(lmer_gDNA_read5) # 0.00487 0.005
+# R2m = marginal R-squared (variance explained by fixed effects only)
+# R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_gDNA_read5, type = "pearson") # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+plot(lmer_gDNA_read5) # gives a heteroscedasticity plot
+plot(sresid ~ mydata2$log.readNum)
+
+pred.mm4 <- ggpredict(lmer_gDNA_read5, terms = c("log.readNum"))
+
+# Plot the predictions
+(p12 <- ggplot() +
+  geom_line(
+    data = pred.mm4, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) + # slope
+  geom_ribbon(
+    data = pred.mm4, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.5
+  ) +
+  geom_point(data = mydata2, aes(
+    x = log.readNum, y = log.inputGDNA,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata2, aes(
+      x = log.readNum, y = log.inputGDNA,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  ylim(2.3, 4.7) +
+  labs(x = "ln(non-Offset-corrected OTU size)", y = "ln(Input Genomic DNA)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+
+p11 + p12
+```
+
+```{r}
+(p10 + p9) / (p12 + p11)
+```
+
+##### Test of Warton spike-in estimator on summarised dataset, averaged over soupRep and pcrRep  
+
+reformat data
+```{r reformat to mydata3}
+mydata3 <- mydata %>% 
+  select(-mtagNum, -exp, -lib, -sampleName, -PCR, -readSpike, -mtagSpike,
+         -readNumSpikeCorr, -mtagNumSpikeCorr, -inputCOINum, -inputGDNA,
+         -starts_with("log.")) %>% 
+  group_by(OTUID, soup) %>% 
+  summarise(
+    readNumMean = round(mean(readNum))
+  ) %>% 
+  pivot_wider(names_from = OTUID, values_from = readNumMean)
+
+otu <- mydata3 %>% 
+  select(starts_with("HAP"))
+
+X <- mydata3 %>% 
+  select(!starts_with("HAP"))
+```
+
+Warton's spike-in estimator: offset0
+```{r calculate offset0 for mydata3}
+otu <- mvabund(otu)
+# fit0 <- manyglm(otu ~ 1, family = "negative.binomial") # if no predictors
+fit0 <- manyglm(otu ~ soup, family = "negative.binomial", data = X) # data = the env covariates. otu is the otu table
+# fit0 <- manyglm(otu ~ soup, family = binomial("cloglog")) # for p/a data
+offset0 <- log(rowSums(otu)) - log(rowSums(fitted(fit0))) 
+mydata3$offset0 <- offset0
+mydata3 <- mydata3 %>% 
+  mutate(
+    offset0_scale = rescale(offset0, to = c(1, 10))
+  ) %>% 
+  pivot_longer(cols = starts_with("HAP"), 
+               names_to = "OTUID", 
+               values_to = "readNumMean") %>% 
+  mutate(
+    readNumMeanOffsetCorr = readNumMean / offset0_scale
+  ) %>% 
+  relocate(OTUID, soup)
+
+
+mydata4 <- mydata %>% 
+  select(OTUID, soup, inputCOINum, inputGDNA) %>% 
+  group_by(OTUID, soup) %>% 
+  summarise(
+    inputCOINum = round(mean(inputCOINum)),
+    inputGDNA = round(mean(inputGDNA))
+  ) 
+  
+
+mydata3 <- mydata3 %>% 
+  right_join(mydata4) %>% 
+  mutate(
+    log.inputCOINum = log(inputCOINum + 1),
+    log.inputGDNA = log(inputGDNA + 1),
+    log.readNumMean = log(readNumMean + 1),
+    log.readNumMeanOffsetCorr = log(readNumMeanOffsetCorr + 1)
+  )  
+
+names(mydata3)
+```
+
+ [1] "OTUID"                     "soup"                      "offset0"        
+ [4] "offset0_scale"             "readNumMean"               "readNumMeanOffsetCorr"
+ [7] "inputCOINum"               "inputGDNA"                 "log.inputCOINum"
+[10] "log.inputGDNA"             "log.readNumMean"        "log.readNumMeanOffsetCorr"
+
+mixed-effect model
+results in a negative slope, which is the opposite of the expected result. The reason for the negative slope is that soup F is given the smallest offset. Dividing by the offset results in the largest readNumOffsetCorr values, when F soups should have the third smallest. 
+```{r COI offset-corrected readNumMean}
+# test random effects
+lmer_coi_readOffsetCorr1 <- lmer(log.inputCOINum ~ log.readNumMeanOffsetCorr +
+  (log.readNumMeanOffsetCorr | OTUID), data = mydata3, REML = FALSE)
+summary(lmer_coi_readOffsetCorr1)
+par(mfrow = c(2,2))
+plot(lmer_coi_readOffsetCorr1)
+par(mfrow = c(1,1))
+
+lmer_coi_readOffsetCorr2 <- lmer(log.inputCOINum ~ log.readNumMeanOffsetCorr +
+  (1 | OTUID), data = mydata3, REML = FALSE)
+summary(lmer_coi_readOffsetCorr2)
+plot(lmer_coi_readOffsetCorr2)
+
+
+AIC(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr2) # lmer_coi_readOffsetCorr1 has lowest AIC, keep random intercept and slope
+
+# test fixed effects
+lmer_coi_readOffsetCorr4 <- lmer(log.inputCOINum ~ 1 +
+  (log.readNumMeanOffsetCorr | OTUID), data = mydata3, REML = F)
+
+AIC(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr4) # lmer_coi_readOffsetCorr1
+anova(lmer_coi_readOffsetCorr1, lmer_coi_readOffsetCorr4) # significantly different. keep fixed effect
+
+# parameter estimates
+lmer_coi_readOffsetCorr5 <- lmer(log.inputCOINum ~ log.readNumMeanOffsetCorr +
+  (log.readNumMeanOffsetCorr | OTUID), data = mydata3, REML = TRUE)
+summary(lmer_coi_readOffsetCorr5)
+r.squaredGLMM(lmer_coi_readOffsetCorr5) # 0.114 0.931
+
+sresid <- resid(lmer_coi_readOffsetCorr5, type = "pearson")
+hist(sresid)
+plot(lmer_coi_readOffsetCorr5)
+
+pred.mm1 <- ggpredict(lmer_coi_readOffsetCorr5, 
+                      terms = c("log.readNumMeanOffsetCorr"))
+
+(p9 <- ggplot() +
+  geom_line(
+    data = pred.mm1, aes(x = x, y = predicted),
+    colour = "black", size = 1
+  ) +
+  geom_ribbon(
+    data = pred.mm1, aes(
+      x = x, ymin = predicted - std.error,
+      ymax = predicted + std.error
+    ),
+    fill = "lightgrey", alpha = 0.3
+  ) +
+  geom_point(data = mydata3, aes(
+    x = log.readNumMeanOffsetCorr, y = log.inputCOINum,
+    colour = OTUID
+  ), size = 0.8) +
+  geom_smooth(
+    data = mydata3, aes(
+      x = log.readNumMeanOffsetCorr, y = log.inputCOINum,
+      group = OTUID
+    ),
+    method = "lm", se = FALSE, size = 0.3, colour = "black", alpha = 0.5,
+    linetype = 1
+  ) +
+  labs(x = "ln(Offset-corrected OTU size)", y = "ln(input COI copy number)") +
+  theme_cowplot() +
+  theme(legend.position = "none"))
+```
