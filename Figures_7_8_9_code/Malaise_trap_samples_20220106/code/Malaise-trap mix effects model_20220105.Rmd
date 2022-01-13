@@ -1,0 +1,204 @@
+---
+title: "ME dilution"
+author: "Mingjie"
+date: "7/5/2021"
+output: html_document
+---
+
+
+```{r setup, eval=TRUE, include=FALSE}
+# script-specific packages
+#install.packages("broom.mixed")
+#install.packages("MuMIn")
+#install.packages("sjPlot")
+#install.packages("equatiomatic")
+#install.packages("lmerTest")
+
+suppressPackageStartupMessages({
+  library(sjPlot)
+  library(broom.mixed)
+  library(MuMIn)
+  library(equatiomatic)
+  # library(lme4)
+  library(lmerTest)
+})
+
+# general-use packages
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(here)
+  library(fs)
+  library(glue)
+  library(readxl)
+  library(cowplot)
+  library(lubridate)
+  library(patchwork)
+  library(broom)
+  library(ggeffects)
+  library(viridis)
+  library(arsenal) # for tableby()
+  library(waldo) # for compare()
+  library(sjmisc) # for rotate_df()
+  library(envDocument) #not available 
+  library(inspectdf)
+  library(conflicted)
+  library(knitr)
+  library(beepr)
+  library(pivottabler)
+  library(furrr)
+  library(scales)
+  library(janitor)
+  library(tictoc)
+  library(DataExplorer)
+  library(ragg)
+})
+
+# Sometimes, two or more packages use the same function names. The {conflicted} package lets you set which package gets precedence. For example, the next line enforces that filter() refers to the {dplyr} package. If you want to use the command filter() from a different package, you just need to precede it with the desired package name like this: stats::filter.
+conflict_prefer("mutate", "dplyr", quiet = TRUE)
+conflict_prefer("select", "dplyr", quiet = TRUE)
+conflict_prefer("summarise", "dplyr", quiet = TRUE)
+conflict_prefer("filter", "dplyr", quiet = TRUE)
+conflict_prefer("first", "dplyr", quiet = TRUE)
+conflict_prefer("here", "here", quiet = TRUE)
+conflict_prefer("separate", "tidyr", quiet = TRUE)
+conflict_prefer("unite", "tidyr", quiet = TRUE)
+conflict_prefer("trim", "sjmisc", quiet=TRUE)
+conflict_prefer("rescale", "scales", quiet=TRUE)
+conflict_prefer("intersect", "dplyr", quiet = TRUE)
+conflict_prefer("setdiff", "dplyr", quiet = TRUE) # w/out this, R crashes
+conflict_prefer("to_factor", "sjmisc", quiet = TRUE)
+conflict_prefer("trim", "glue", quiet = TRUE)
+conflict_prefer("discard", "purrr", quiet = TRUE)
+conflict_prefer("extract", "tidyr", quiet = TRUE)
+conflict_prefer("lmer", "lme4", quiet = TRUE)
+conflict_prefer("col_facotr", "scales")
+
+# R version
+R.version.string
+# Print real numbers, not scientific notation.
+options(scipen = 999)
+```
+
+```{r read data}
+dd <- read.csv(here('data','Malaise-trap_Samples_20211228.csv'), header = T)
+str(dd)
+```
+
+
+```{r}
+#both x and y need log
+dd$log.OTUsize <- log(dd$OTUsize)
+dd$log.inputDNA <- log(dd$inputDNA)
+dd$log.FSL <- log(dd$FSL)
+
+plot_missing(dd)
+plot_histogram(dd)
+```
+
+```{r spike-corrected FSL}
+lmer1 <- lmer(log.inputDNA ~ log.FSL + (1 | sample), data = dd, 
+              REML = F)
+summary(lmer1)
+plot(lmer1)
+
+lmer2 <-lmer(log.inputDNA ~ log.FSL + (1 | OTU), data = dd, REML = F)
+summary(lmer2)
+plot(lmer2)
+
+lmer3 <- lmer(log.inputDNA ~ log.FSL + (1 | sample/OTU), 
+              data = dd, REML = F)
+summary(lmer3)
+plot(lmer3)
+
+lmer4<- lmer(log.inputDNA ~ log.FSL +(log.FSL | sample/OTU), 
+             data = dd, REML = F)
+summary(lmer4) 
+# singular fit
+plot(lmer4)
+
+AIC(lmer1, lmer2, lmer3, lmer4) # lmer4 has lowest AIC 
+
+ranova(lmer3) # keep both random intercepts
+ranova(lmer4) # keep random slope log.FSL
+
+# test if we can remove fixed effect log.FSL
+lmer5 <- lmer(log.inputDNA ~ 1 + (1 | sample/OTU), data = dd, REML = F)
+summary(lmer5)
+# singular fit
+plot(lmer5)
+
+AIC (lmer4, lmer5)
+anova(lmer4, lmer5) # two models are significantly different, keep log.FSL fixed effect
+
+model.final <- lmer(log.inputDNA ~ log.FSL + (log.FSL | sample/OTU),
+                    data = dd, REML = T)
+
+summary(model.final)
+AIC(model.final)
+
+r.squaredGLMM(model.final) #0.53, 0.98
+```
+
+```{r ggplot spike-corrected FSL}
+pred.mm <- ggpredict(model.final, terms = c("log.FSL[all]"))
+
+dd$sample2 <-  str_replace_all(dd$sample, c("123545.M1.S1" = "Sample 1", "124031.M1.S1" = "Sample 2", "286789.M1.S1" = "Sample 3", "357256.M2.S1" = "Sample 4", "700239.M1.S1" = "Sample 5", "HB.053.M1.S1" = "Sample 6", "HB.216.M1.S1" = "Sample 7"))
+
+(p1 <- ggplot() +
+  geom_line(data = pred.mm, aes(x = x, y = predicted), 
+            colour = "black", size = 1) +
+  geom_ribbon(data = pred.mm, aes(x = x, ymin = predicted - std.error, 
+                                  ymax = predicted + std.error), 
+              fill = "lightgrey", alpha = 0.5) +
+  geom_point(data = dd, aes( x = log.FSL, y = log.inputDNA, colour = OTU), 
+             size = 0.8) +
+  geom_smooth(data = dd, aes( x = log.FSL, y = log.inputDNA, group = OTU),
+              method = "lm", se = FALSE, size = 0.3, colour = "black", 
+              alpha = 0.5, linetype = 1) +
+  labs(x = "log(spike-corrected OTU size)", y = "log(input genomic DNA mass)") +
+  theme_cowplot() +
+  theme(legend.position = "none") + 
+  facet_wrap(~sample2) +
+  coord_cartesian(ylim = c(-2.0, 0.25)) +
+  scale_y_continuous(breaks = seq(-2.5, 0.5, 0.5)))
+```
+
+
+```{r non spike-corrected OTU size }
+lmer_otusize1 <- lmer(log.inputDNA ~ log.OTUsize + (1| sample), data = dd, 
+                      REML = F )
+lmer_otusize2 <- lmer(log.inputDNA ~ log.OTUsize + (1| sample/OTU), data = dd,
+                      REML = F)
+lmer_otusize3 <- lmer(log.inputDNA ~ log.OTUsize + (log.OTUsize | sample/OTU), 
+                      data =dd, REML = F)
+# singular fit
+ranova(lmer_otusize1) # remove random factor
+ranova(lmer_otusize2) # remove random factor
+ranova(lmer_otusize3) # remove random factor
+# all the random factors should be omitted from the model
+
+lm_otusize4 <- lm(log.inputDNA ~ log.OTUsize, data = dd)
+lm_otusize5 <- lm(log.inputDNA ~ 1, data = dd)
+anova(lmer_otusize4, lmer_otusize5) # fixed effect log.OTUsize is not significant, p = 0.332
+
+summary(lm_otusize5)
+
+(p2 <- ggplot() +
+  geom_smooth(data = dd, aes(x = log.OTUsize, y = log.inputDNA), 
+            method = "lm", se = FALSE, colour = "black", size = 1) +
+  geom_point(data = dd, aes(x = log.OTUsize, y = log.inputDNA, 
+                             colour = OTU), size = 0.8) +
+  geom_smooth(data = dd, aes(x = log.OTUsize, y = log.inputDNA, group = OTU),
+              method = "lm", se = FALSE, size = 0.3, colour = "black", 
+              alpha = 0.5, linetype = 1) +
+  labs(x = "log(non spike-corrected OTU size)", 
+       y = "log(input genomic DNA mass)") +
+  theme_cowplot() +
+  theme(legend.position = "none") + 
+  coord_cartesian(ylim = c(-2.0, 0)) +
+  facet_wrap(~sample2))
+
+p2 / p1 + plot_annotation(tag_levels = 'A')
+```
+
+
