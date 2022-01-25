@@ -1,0 +1,449 @@
+---
+title: "mixed effects"
+author: "Mingjie"
+date: "7/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r setup, eval=TRUE, include=FALSE}
+# script-specific packages
+suppressPackageStartupMessages({
+  library(sjPlot)
+  library(broom.mixed)
+  library(lme4)
+  library(MuMIn)
+  library(lmtest)
+  library(lattice)
+  library(equatiomatic)
+})
+
+# general-use packages
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(here)
+  library(fs)
+  library(glue)
+  library(readxl)
+  library(cowplot)
+  library(lubridate)
+  library(patchwork)
+  library(broom)
+  library(ggeffects)
+  library(viridis)
+  library(arsenal) # for tableby()
+  library(waldo) # for compare()
+  library(sjmisc) # for rotate_df()
+  library(envDocument)
+  library(inspectdf)
+  library(conflicted)
+  library(knitr)
+  library(beepr)
+  library(pivottabler)
+  library(furrr)
+  library(scales)
+  library(janitor)
+  library(tictoc)
+})
+
+# Sometimes, two or more packages use the same function names. The {conflicted} package lets you set which package gets precedence. For example, the next line enforces that filter() refers to the {dplyr} package. If you want to use the command filter() from a different package, you just need to precede it with the desired package name like this: stats::filter.
+conflict_prefer("mutate", "dplyr", quiet = TRUE)
+conflict_prefer("select", "dplyr", quiet = TRUE)
+conflict_prefer("summarise", "dplyr", quiet = TRUE)
+conflict_prefer("filter", "dplyr", quiet = TRUE)
+conflict_prefer("first", "dplyr", quiet = TRUE)
+conflict_prefer("here", "here", quiet = TRUE)
+conflict_prefer("separate", "tidyr", quiet = TRUE)
+conflict_prefer("unite", "tidyr", quiet = TRUE)
+conflict_prefer("trim", "sjmisc", quiet=TRUE)
+conflict_prefer("rescale", "scales", quiet=TRUE)
+conflict_prefer("intersect", "dplyr", quiet = TRUE)
+conflict_prefer("setdiff", "dplyr", quiet = TRUE) # w/out this, R crashes
+conflict_prefer("to_factor", "sjmisc", quiet = TRUE)
+conflict_prefer("trim", "glue", quiet = TRUE)
+conflict_prefer("discard", "purrr", quiet = TRUE)
+conflict_prefer("extract", "tidyr", quiet = TRUE)
+conflict_prefer("col_factor", "readr", quiet = TRUE)
+
+# R version
+R.version.string
+# Print real numbers, not scientific notation.
+options(scipen = 999)
+```
+
+
+################################ mixed effects model #############################
+```{r log}
+mydata <- read.table(here('data', 'mocksoup_longtable.txt'), header = T)
+mydata <- mydata %>% 
+  filter(readNum != 0) %>% 
+  filter(! OTUID %in% c("HAP222", "HAP264"))
+
+mydata$log.readNum <- log(mydata$readNum)
+mydata$log.inputCoiCopy <- log(mydata$inputCOINum)
+mydata$log.UMI <- log(mydata$mtagNum)
+mydata$log.inputGDNA <- log(mydata$inputGDNA)
+mydata$log.UmiSpikeCorr <- log(mydata$mtagNumSpikeCorr)
+mydata$log.readSpikeCorr <- log(mydata$readNumSpikeCorr)
+
+str(mydata)
+
+
+
+p0 <- ggplot(mydata, aes(y = inputCOINum, x = readNum, color = OTUID)) +
+    geom_point() +
+    theme_cowplot()+
+    theme(legend.position = "none")
+
+p0.1 <- ggplot(mydata, aes(y = log.inputCoiCopy, x = log.readNum , color = OTUID)) +
+    geom_point() +
+    theme_cowplot()+
+    theme(legend.position = "none")
+
+p0+p0.1 #need log
+
+############ g DNA ##################
+p0.2 <-  ggplot(mydata, aes(y = log.inputGDNA, x = log.readNum, color = OTUID)) +
+    geom_point() +
+    geom_smooth(method = "lm",level = F) +
+    theme_cowplot() +
+    theme(legend.position = "none")
+
+p0.2 #need log
+```
+
+```{r}
+basic.lm1 <- lm(log.inputCoiCopy ~ log.readNum, data = mydata)
+basic.lm2 <- lm(log.inputCoiCopy ~ log.readSpikeCorr, data = mydata)
+summary(basic.lm1)
+summary(basic.lm2)
+
+par(mfrow = c(2,2))
+plot(basic.lm2)
+
+otu.lm <- lm(log.inputCoiCopy ~ log.readSpikeCorr + OTUID, data = mydata)
+summary(otu.lm) #OTU and x are significant 
+```
+
+
+```{r mixed effects model}
+mixed.lmer1 <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (1 | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = FALSE)
+summary(mixed.lmer1)
+
+plot(mixed.lmer1)
+
+mixed.lmer2 <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (log.readSpikeCorr| OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = FALSE)
+summary(mixed.lmer2)
+
+plot(mixed.lmer2)
+
+mixed.lmer3 <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (1 | OTUID), data = mydata, REML = FALSE)
+summary(mixed.lmer3)
+plot(mixed.lmer3)
+
+mixed.lmer4 <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (1 | soupRep/pcrRep), data = mydata, REML = FALSE)
+
+summary(mixed.lmer4)
+
+AIC(mixed.lmer1, mixed.lmer2, mixed.lmer3, mixed.lmer4) #model2 has lower AIC, let's use random intercept and slope, keep OTUID, soupRep, pcrRep
+```
+
+
+```{r}
+#whether or not to keep fixed effects
+# full model
+model5 <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (log.readSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+
+# remove length
+model6 <- lmer(log.inputCoiCopy ~ 1 + (log.readSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data =mydata, REML = F)
+anova(model5, model6) #significantly different. keep fixed effects
+AIC(model5, model6) #chose model5
+
+############################# OTU size spike corr########################
+lmer_coi_readSpikeCorr <- lmer(log.inputCoiCopy ~ log.readSpikeCorr + (log.readSpikeCorr | OTUID) + (1 |soupRep/pcrRep), data = mydata, REML = T)
+summary(lmer_coi_readSpikeCorr)
+r.squaredGLMM(lmer_coi_readSpikeCorr) #0.40 0.96
+
+sresid <- resid(lmer_coi_readSpikeCorr, type = "pearson")
+hist(sresid)
+plot(lmer_coi_readSpikeCorr)
+plot(sresid ~ mydata$log.readSpikeCorr) #variabe length differ
+
+stargazer::stargazer(lmer_coi_readSpikeCorr, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+
+pred.mm1 <- ggpredict(lmer_coi_readSpikeCorr, terms = c("log.readSpikeCorr"))
+
+p1 <- ggplot() + 
+   geom_line(data = pred.mm1, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm1, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.readSpikeCorr, y = log.inputCoiCopy, colour = OTUID)) + 
+   labs(x = "spike-corrected OTU size ", y = "input COI copy number") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+
+p1
+```
+
+
+
+```{r  non-corrected readNum}
+lmer_coi_read1 <- lmer(log.inputCoiCopy ~ log.readNum + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+lmer_coi_read2 <- lmer(log.inputCoiCopy ~ log.readNum + (1 | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+lmer_coi_read3 <- lmer(log.inputCoiCopy ~ log.readNum + (1 | OTUID), data = mydata, REML = F)
+lmer_coi_read4 <- lmer(log.inputCoiCopy ~ log.readNum +  (1 | soupRep/pcrRep), data = mydata, REML = F)
+AIC(lmer_coi_read1, lmer_coi_read2, lmer_coi_read3, lmer_coi_read4) #choose model1
+
+lmer_coi_read5 <-  lmer(log.inputCoiCopy ~ 1 + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+AIC(lmer_coi_read1, lmer_coi_read5)
+anova(lmer_coi_read1, lmer_coi_read5)#keep fixed effects
+
+lmer_coi_read <-  lmer(log.inputCoiCopy ~ log.readNum + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+summary(lmer_coi_read)
+r.squaredGLMM(lmer_coi_read) # MuMIn package 0,04 0.85
+#R2m = marginal R-squared (variance explained by fixed effects only)
+#R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_coi_read, type = "pearson")  # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_coi_read)  # gives a heteroscedasticity plot 
+
+#plot(sresid ~ mydata$log.readNum)
+
+stargazer::stargazer(lmer_coi_read, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+
+pred.mm2 <- ggpredict(lmer_coi_read, terms = c("log.readNum"))
+
+# Plot the predictions 
+p2 <- ggplot() + 
+   geom_line(data = pred.mm2, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm2, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.readNum, y = log.inputCoiCopy, colour = OTUID)) + 
+   labs(x = "non-spike-corrected OTU size", y = " input COI copy number") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+ p2
+
+ # Visualise fixed and random effects as departures from the population mean effects
+(re.effects <- plot_model(lmer_coi_read, type = "re", show.values = TRUE))
+```
+
+
+````{r}
+################################## OTU size gDNA ################################
+lmer_gDNA_read1 <- lmer(log.inputGDNA ~ log.readNum + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F) #model is too conplicated for the data
+lmer_gDNA_read2 <- lmer(log.inputGDNA ~ log.readNum + (1 | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+lmer_gDNA_read3 <- lmer(log.inputGDNA ~ log.readNum + (1 | OTUID), data = mydata, REML = F)
+lmer_gDNA_read4 <- lmer(log.inputGDNA ~ log.readNum + (1 | soupRep/pcrRep), data = mydata, REML = F)
+
+AIC(lmer_gDNA_read1, lmer_gDNA_read2, lmer_gDNA_read3, lmer_gDNA_read4) #model 1
+
+lmer_gDNA_read5 <- lmer(log.inputGDNA ~ 1 + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+anova(lmer_gDNA_read1, lmer_gDNA_read5) #keep fixed effects 
+AIC(lmer_gDNA_read1, lmer_gDNA_read5)
+
+########final model###########
+lmer_gDNA_read <- lmer(log.inputGDNA ~ log.readNum + (log.readNum | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+
+r.squaredGLMM(lmer_gDNA_read) # 0.01 0.02
+#R2m = marginal R-squared (variance explained by fixed effects only)
+#R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_gDNA_read, type = "pearson")  # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_gDNA_read)  # gives a heteroscedasticity plot 
+
+plot(sresid ~ mydata$log.readNum)
+
+pred.mm3 <- ggpredict(lmer_gDNA_read, terms = c("log.readNum"))
+
+# Plot the predictions 
+p3 <- ggplot() + 
+   geom_line(data = pred.mm3, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm3, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.readNum, y = log.inputGDNA, colour = OTUID)) + 
+   labs(x = "non-spike-corrected OTU size", y = " Input Genomic DNA") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+p3
+```
+
+
+````{r gDNA spike corrected read}
+lmer_gDNA_readSpikeCorr <- lmer(log.inputGDNA ~ log.readSpikeCorr + (log.readSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+ 
+r.squaredGLMM(lmer_gDNA_readSpikeCorr)
+sresid <- resid(lmer_gDNA_readSpikeCorr, type = "pearson")
+hist(sresid)
+plot(lmer_gDNA_readSpikeCorr)
+plot(sresid ~ mydata$log.readSpikeCorr)
+
+stargazer::stargazer(lmer_gDNA_readSpikeCorr, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+
+pred.mm4 <- ggpredict(lmer_gDNA_readSpikeCorr, terms = c("log.readSpikeCorr"))
+
+p4 <- ggplot() + 
+   geom_line(data = pred.mm4, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm4, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.readSpikeCorr, y = log.inputGDNA, colour = OTUID)) + 
+   labs(x = "spike-corrected OTU size ", y = "input genomic DNA") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+
+p3 + p4
+p3 + p4 + p2 + p1
+```
+
+
+
+```{r gNDA~UMI}
+lmer_gDNA_UMI <- lmer(log.inputGDNA ~ log.UMI + (log.UMI | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+r.squaredGLMM(lmer_gDNA_UMI) # MuMIn package -.013 0.029
+#R2m = marginal R-squared (variance explained by fixed effects only)
+#R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_gDNA_UMI, type = "pearson")  # Extract the standardised residuals, check underline assumption of normally distibuted
+
+hist(sresid)
+
+plot(lmer_gDNA_UMI)  # gives a heteroscedasticity plot 
+
+plot(sresid ~ mydata$log.UMI)
+
+stargazer::stargazer(lmer_gDNA_UMI, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+pred.mm5 <- ggpredict(lmer_gDNA_UMI, terms = c("log.UMI"))
+
+# Plot the predictions 
+p5 <- ggplot() + 
+   geom_line(data = pred.mm5, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm5, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.UMI, y = log.inputGDNA, colour = OTUID)) + 
+   labs(x = "non-spike-corrected number of UMI", y = " Input Genomic DNA") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+p5
+
+
+########################################## corrected #############################################
+lmer_gDNA_UMIspikeCorr <- lmer(log.inputGDNA ~ log.UmiSpikeCorr+ (log.UmiSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+ 
+r.squaredGLMM(lmer_gDNA_UMIspikeCorr)# 0.49 0.94
+sresid <- resid(lmer_gDNA_UMIspikeCorr, type = "pearson")
+hist(sresid)
+plot(lmer_gDNA_UMIspikeCorr)
+plot(sresid ~ mydata$log.UmiSpikeCorr)
+
+stargazer::stargazer(lmer_gDNA_UMIspikeCorr, type = "text",
+          digits = 3,
+          star.cutoffs = c(0.05, 0.01, 0.001),
+          digit.separator = "")
+
+pred.mm6 <- ggpredict(lmer_gDNA_UMIspikeCorr, terms = c("log.UmiSpikeCorr"))
+
+p6 <- ggplot() + 
+   geom_line(data = pred.mm6, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm6, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.UmiSpikeCorr, y = log.inputGDNA, colour = OTUID)) + 
+   labs(x = "spike-corrected number of UMI ", y = "input genomic DNA") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+
+p5 + p6
+
+```
+
+
+```{r coi~UMI}
+lmer_coi_UMI <- lmer(log.inputCoiCopy ~ log.UMI + (log.UMI | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+r.squaredGLMM(lmer_coi_UMI) # 0.05 0.85
+#R2m = marginal R-squared (variance explained by fixed effects only)
+#R2c = conditional R-squared (variance explained by random + fixed effects)
+
+sresid <- resid(lmer_coi_UMI, type = "pearson")  # Extract the standardised residuals, check underline assumption of normally distibuted
+hist(sresid)
+
+plot(lmer_coi_UMI)  # gives a heteroscedasticity plot 
+
+#plot(sresid ~ mydata$log.UMI)
+
+pred.mm7 <- ggpredict(lmer_coi_UMI, terms = c("log.UMI"))
+
+# Plot the predictions 
+p7 <- ggplot() + 
+   geom_line(data = pred.mm7, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm7, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.UMI, y = log.inputCoiCopy, colour = OTUID)) + 
+   labs(x = "non-spike-corrected number of UMI", y = " input COI copy number") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+p7
+
+lmer_coi_UMIspikeCorr1 <- lmer(log.inputCoiCopy ~ log.UmiSpikeCorr+ (log.UmiSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+lmer_coi_UMIspikeCorr2 <- lmer(log.inputCoiCopy ~ log.UmiSpikeCorr+ (1 | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = F)
+
+AIC(lmer_coi_UMIspikeCorr1, lmer_coi_UMIspikeCorr2)
+
+lmer_coi_UMIspikeCorr <- lmer(log.inputCoiCopy ~ log.UmiSpikeCorr+ (log.UmiSpikeCorr | OTUID) + (1 | soupRep/pcrRep), data = mydata, REML = T)
+ 
+r.squaredGLMM(lmer_coi_UMIspikeCorr) #0.42 0.95
+
+sresid <- resid(lmer_coi_UMIspikeCorr, type = "pearson")
+hist(sresid)
+plot(lmer_coi_UMIspikeCorr)
+#plot(sresid ~ mydata$log.UmiSpikeCorr)
+
+pred.mm8 <- ggpredict(lmer_coi_UMIspikeCorr, terms = c("log.UmiSpikeCorr"))
+
+p8 <- ggplot() + 
+   geom_line(data = pred.mm8, aes(x = x, y = predicted)) +  # slope
+   geom_ribbon(data = pred.mm8, aes(x = x, ymin = predicted - std.error, ymax = predicted + std.error), fill = "lightgrey", alpha = 0.5) + 
+   geom_point(data = mydata, 
+        aes(x = log.UmiSpikeCorr, y = log.inputCoiCopy, colour = OTUID)) + 
+   labs(x = "spike-corrected number of UMI ", y = "input COI copy number") + 
+   theme_cowplot() +
+   theme(legend.position = "none")
+
+p7 + p8
+p5 + p6 + p7 + p8
+```
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was amydataed to the code chunk to prevent printing of the R code that generated the plot.
