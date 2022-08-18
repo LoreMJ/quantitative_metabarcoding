@@ -1,3 +1,4 @@
 # quantitive_metabarcoding
-extracting abundance information from DNA-based data.
-There are two datasets: mock soups (figure 7-8) and Malaise-trap samples (figure 9)
+# extracting abundance information from DNA-based data.
+
+There are two datasets: mock soups (figure 4, Figure S3) and Malaise-trap samples (figure 5)
